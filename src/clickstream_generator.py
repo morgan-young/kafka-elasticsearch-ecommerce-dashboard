@@ -77,10 +77,15 @@ class ClickstreamGenerator:
         self.producer = KafkaProducer(
             bootstrap_servers=config.KAFKA_BOOTSTRAP_SERVERS,
             value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+            # Make sends more immediate
+            linger_ms=0,  # Don't wait to batch
+            batch_size=1,  # Send immediately
         )
         self.users: Dict[str, UserBehavior] = {}
         self.product_ids: List[str] = []
+        self.product_cache: Dict[str, tuple] = {}  # Cache product info to avoid ES lookups
         self.event_counter = 0
+        self.es = None  # Lazy load Elasticsearch client
 
     def load_product_ids(self) -> None:
         """Load product IDs from Elasticsearch."""
@@ -213,19 +218,28 @@ class ClickstreamGenerator:
 
         product_id = random.choice(self.product_ids)
         
-        # Try to lookup product from Elasticsearch
+        # Check cache first
+        if product_id in self.product_cache:
+            return self.product_cache[product_id]
+        
+        # Try to lookup product from Elasticsearch (with timeout to avoid blocking)
         try:
-            es = Elasticsearch([config.ELASTICSEARCH_HOST])
-            result = es.get(
+            if self.es is None:
+                self.es = Elasticsearch([config.ELASTICSEARCH_HOST], request_timeout=1)
+            
+            result = self.es.get(
                 index=config.ELASTICSEARCH_INDEX_PRODUCTS,
                 id=product_id,
                 _source=["category", "price"],
             )
             category = result["_source"].get("category", "electronics.audio.headphones")
             price = result["_source"].get("price", 99.99)
-            return product_id, category, price
+            info = (product_id, category, price)
+            # Cache the result
+            self.product_cache[product_id] = info
+            return info
         except Exception:
-            # Fallback to synthetic data if lookup fails
+            # Fallback to synthetic data if lookup fails (much faster)
             categories = [
                 "electronics.audio.headphones",
                 "electronics.computers.laptops",
@@ -237,7 +251,10 @@ class ClickstreamGenerator:
             ]
             category = random.choice(categories)
             price = round(random.uniform(10, 2000), 2)
-            return product_id, category, price
+            info = (product_id, category, price)
+            # Cache the result
+            self.product_cache[product_id] = info
+            return info
 
     def generate_event_sequence(self, user: UserBehavior) -> List[Dict]:
         """Generate a realistic event sequence for a user."""
@@ -298,7 +315,9 @@ class ClickstreamGenerator:
     def send_event(self, event: Dict, topic: str) -> None:
         """Send event to Kafka topic."""
         try:
-            self.producer.send(topic, value=event)
+            future = self.producer.send(topic, value=event)
+            # Wait for send to complete to ensure steady rate
+            future.get(timeout=1)
         except Exception as e:
             print(f"Error sending event to {topic}: {e}")
 
@@ -309,6 +328,9 @@ class ClickstreamGenerator:
 
         print(f"Starting clickstream generator ({events_per_second} events/sec)...")
         interval = 1.0 / events_per_second
+        events_sent = 0
+        start_time = time.time()
+        last_event_time = time.time()
 
         try:
             while True:
@@ -316,7 +338,10 @@ class ClickstreamGenerator:
                 user = self.get_or_create_user()
                 events = self.generate_event_sequence(user)
 
+                # Send events one at a time with proper rate control
                 for event in events:
+                    event_start = time.time()
+                    
                     # Route to appropriate topic
                     if event["eventType"] == "search":
                         self.send_event(event, config.KAFKA_TOPIC_SEARCH)
@@ -325,11 +350,27 @@ class ClickstreamGenerator:
                     elif event["eventType"] in ["purchase", "refund"]:
                         self.send_event(event, config.KAFKA_TOPIC_ORDER)
 
-                    time.sleep(interval)
+                    events_sent += 1
+                    
+                    # Calculate time since last event
+                    elapsed_since_last = event_start - last_event_time
+                    
+                    # Sleep to maintain rate
+                    sleep_time = max(0, interval - elapsed_since_last)
+                    if sleep_time > 0:
+                        time.sleep(sleep_time)
+                    
+                    last_event_time = time.time()
 
                 # Occasionally start a new session
                 if random.random() < 0.3:
                     user.session_id = f"SESSION-{fake.uuid4()}"
+                
+                # Log rate every 1000 events
+                if events_sent % 1000 == 0:
+                    elapsed_total = time.time() - start_time
+                    actual_rate = events_sent / elapsed_total if elapsed_total > 0 else 0
+                    print(f"Sent {events_sent} events, actual rate: {actual_rate:.1f} events/sec")
 
         except KeyboardInterrupt:
             print("\nStopping clickstream generator...")

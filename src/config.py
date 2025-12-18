@@ -28,7 +28,7 @@ class Config:
     PRODUCT_COUNT: int = int(os.getenv("PRODUCT_COUNT", "50000"))
 
     # Clickstream Generation
-    EVENTS_PER_SECOND: int = int(os.getenv("EVENTS_PER_SECOND", "100"))
+    EVENTS_PER_SECOND: int = int(os.getenv("EVENTS_PER_SECOND", "1000"))
     BOT_TRAFFIC_RATIO: float = float(os.getenv("BOT_TRAFFIC_RATIO", "0.1"))
     FRAUD_RATIO: float = float(os.getenv("FRAUD_RATIO", "0.02"))
 

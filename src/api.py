@@ -349,8 +349,26 @@ async def get_stats():
             },
         )["count"]
 
-        # Trending products count
-        trending_count = es.count(index=config.ELASTICSEARCH_INDEX_TRENDS)["count"]
+        # Trending products count (only recent products)
+        # Since we now use productId as document ID, count should be accurate
+        try:
+            ten_minutes_ago = (datetime.now() - timedelta(minutes=10)).isoformat()
+            trending_count = es.count(
+                index=config.ELASTICSEARCH_INDEX_TRENDS,
+                body={
+                    "query": {
+                        "range": {
+                            "windowEnd": {
+                                "gte": ten_minutes_ago,
+                            }
+                        }
+                    }
+                }
+            )["count"]
+        except Exception as e:
+            # Fallback if index doesn't exist or query fails
+            print(f"Error counting trending products: {e}")
+            trending_count = 0
 
         # Fraud signals count
         fraud_count = es.count(index=config.ELASTICSEARCH_INDEX_FRAUD)["count"]

@@ -101,9 +101,13 @@ class StreamProcessor:
 
     def flush_trending_products(self) -> None:
         """Flush trending products aggregates to Elasticsearch."""
+        if not self.product_events:
+            return  # Nothing to flush
+        
         now = datetime.now()
         window_start = now - self.trending_window
 
+        flushed_count = 0
         for product_id, events in self.product_events.items():
             view_count = sum(1 for e in events if e.get("eventType") == "view")
             cart_count = sum(1 for e in events if e.get("eventType") == "add_to_cart")
@@ -124,12 +128,19 @@ class StreamProcessor:
                 }
 
                 try:
+                    # Use productId as document ID to update instead of create duplicates
+                    # This ensures we only have one trending record per product
                     self.es.index(
                         index=config.ELASTICSEARCH_INDEX_TRENDS,
+                        id=product_id,  # Use productId as document ID
                         document=trend_doc,
                     )
+                    flushed_count += 1
                 except Exception as e:
                     print(f"Error indexing trend: {e}")
+
+        if flushed_count > 0:
+            print(f"Flushed {flushed_count} trending product(s) to Elasticsearch")
 
     def update_category_funnels(self, event: Dict) -> None:
         """Update category conversion funnels."""
@@ -176,8 +187,11 @@ class StreamProcessor:
             }
 
             try:
+                # Use category as document ID to update instead of create duplicates
+                # This ensures we only have one funnel record per category
                 self.es.index(
                     index=config.ELASTICSEARCH_INDEX_FUNNELS,
+                    id=category,  # Use category as document ID
                     document=funnel_doc,
                 )
                 flushed_count += 1

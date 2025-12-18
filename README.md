@@ -2,6 +2,8 @@
 
 A comprehensive demonstration of event-driven architecture using Kafka for real-time analytics and Elasticsearch for search capabilities. This project generates synthetic e-commerce data at scale and processes it in real-time.
 
+Here is a Cap (Like a Loom but not sh*t now it's owned by Atlassian) of me running through this application.
+
 ## Features
 
 - **Product Catalog (Elasticsearch)**: 10k-100k synthetic products with advanced search capabilities
